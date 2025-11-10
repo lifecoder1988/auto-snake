@@ -9,7 +9,7 @@ let hamiltonian = [];
 let indexMap = [];
 let score = 0;
 let running = true;
-const SMART_MODE_LEN = GRID; // 短蛇阈值：长度小于网格宽度时走曼哈顿贪心
+let SMART_MODE_LEN = GRID; // 短蛇阈值：长度小于网格宽度时走曼哈顿贪心
 let loopTimer = null; // 定时器句柄
 // 计划器状态：当前到苹果的计划路径（逐步执行），为空表示使用环或贪心
 let plan = [];
@@ -17,7 +17,18 @@ let plannedForAppleIndex = -1;
 /**
  * 初始化游戏
  */
+function resizeCanvas() {
+    const margin = 16;
+    const sizeCss = Math.max(240, Math.min(window.innerWidth, window.innerHeight) - margin * 2);
+    const scale = window.devicePixelRatio || 1;
+    canvas.style.width = `${sizeCss}px`;
+    canvas.style.height = `${sizeCss}px`;
+    canvas.width = Math.floor(sizeCss * scale);
+    canvas.height = Math.floor(sizeCss * scale);
+    PIX = canvas.width / GRID;
+}
 function init() {
+    resizeCanvas();
     hamiltonian = buildHamiltonianCycle(GRID);
     indexMap = buildIndexMap(hamiltonian, GRID);
     snake = [hamiltonian[0]];
@@ -34,7 +45,7 @@ function setTick(ms) {
 function restartWithGrid(n) {
     if (n % 2 !== 0) return; // 仅支持偶数网格
     GRID = n;
-    PIX = canvas.width / GRID;
+    SMART_MODE_LEN = GRID;
     // 清理老循环
     if (loopTimer) {
         clearTimeout(loopTimer);
@@ -390,4 +401,9 @@ function loop() {
     draw();
     loopTimer = setTimeout(loop, SPEED);
 }
+// 监听窗口尺寸变化，动态调整画布并重绘
+window.addEventListener("resize", () => {
+    resizeCanvas();
+    draw();
+});
 init();
