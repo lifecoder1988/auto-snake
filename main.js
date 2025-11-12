@@ -1,409 +1,320 @@
-const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d");
-let GRID = 20; // 网格大小（建议偶数）
-let PIX = canvas.width / GRID;
-let SPEED = 10; // 每步间隔(ms)
-let snake = [];
-let apple = { x: 0, y: 0 };
-let hamiltonian = [];
-let indexMap = [];
-let score = 0;
-let running = true;
-let SMART_MODE_LEN = GRID; // 短蛇阈值：长度小于网格宽度时走曼哈顿贪心
-let loopTimer = null; // 定时器句柄
-// 计划器状态：当前到苹果的计划路径（逐步执行），为空表示使用环或贪心
-let plan = [];
-let plannedForAppleIndex = -1;
-/**
- * 初始化游戏
- */
-function resizeCanvas() {
-    const margin = 16;
-    const sizeCss = Math.max(240, Math.min(window.innerWidth, window.innerHeight) - margin * 2);
-    const scale = window.devicePixelRatio || 1;
-    canvas.style.width = `${sizeCss}px`;
-    canvas.style.height = `${sizeCss}px`;
-    canvas.width = Math.floor(sizeCss * scale);
-    canvas.height = Math.floor(sizeCss * scale);
-    PIX = canvas.width / GRID;
-}
-function init() {
+'use strict';
+
+document.addEventListener('DOMContentLoaded', () => {
+  /** ========= 可调参数 ========= */
+  let stepMs = 150;           // 步进间隔（可调）
+  const SHOW_PATH = true;     // 显示哈密顿路径
+
+  /** ========= 变量 ========= */
+  const sizeEl = document.getElementById('size');
+  const speedEl = document.getElementById('speed');
+  const speedValEl = document.getElementById('speedVal');
+  const elapsedEl = document.getElementById('elapsed');
+  let WORLD_SIZE = parseInt(sizeEl?.value || '6', 10);
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  let CELL_SIZE = 0;
+
+  const North = 'North';
+  const South = 'South';
+  const West  = 'West';
+  const East  = 'East';
+
+  const DIRECTION = [
+    [0, 1, North],
+    [0,-1, South],
+    [-1,0, West],
+    [1, 0, East]
+  ];
+
+  let mapGrid = [];     // map[x][y] = {next:[dx,dy,name], optional:[], id:number}
+  let snake = [];       // [[x,y], ...] 头在前
+  let apple = null;     // [ax,ay]
+  let x = 0, y = 0;     // 蛇头坐标
+  let timer = null;     // 定时器
+  let running = false;
+  const stepsEl = document.getElementById('steps');
+  let steps = 0;        // 累计步数
+  let elapsedMs = 0;    // 本次运行累计毫秒
+  let lastTickAt = null; // 上次计时刻
+
+  function updateElapsedUI(){
+    if(elapsedEl) elapsedEl.textContent = (elapsedMs/1000).toFixed(1);
+  }
+
+  /** ========= 画布自适应 ========= */
+  function resizeCanvas(){
+    const dpr = window.devicePixelRatio || 1;
+    // 优先使用 CSS 实际宽度；回退为视口宽度的估计值
+    const fallback = Math.min(600, Math.max(240, document.documentElement.clientWidth - 32));
+    const cssWidth = canvas.clientWidth || fallback;
+    canvas.width  = Math.round(cssWidth * dpr);
+    canvas.height = Math.round(cssWidth * dpr);
+    CELL_SIZE = canvas.width / WORLD_SIZE;
+  }
+
+  /** ========= 工具 ========= */
+  function gridToCanvas(gx, gy){
+    const cx = gx * CELL_SIZE + CELL_SIZE/2;
+    const cy = (WORLD_SIZE - 1 - gy) * CELL_SIZE + CELL_SIZE/2;
+    return [cx, cy];
+  }
+  function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
+
+  /** ========= 视觉绘制 ========= */
+  function drawGrid(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.strokeStyle = '#e6e6e6';
+    for(let i=0;i<=WORLD_SIZE;i++){
+      ctx.beginPath();
+      ctx.moveTo(i*CELL_SIZE,0);
+      ctx.lineTo(i*CELL_SIZE,WORLD_SIZE*CELL_SIZE);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0,i*CELL_SIZE);
+      ctx.lineTo(WORLD_SIZE*CELL_SIZE,i*CELL_SIZE);
+      ctx.stroke();
+    }
+  }
+  function drawHamiltonianPath(){
+    if(!SHOW_PATH) return;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(0,140,255,0.35)';
+    ctx.beginPath();
+    for(let ix=0; ix<WORLD_SIZE; ix++){
+      for(let iy=0; iy<WORLD_SIZE; iy++){
+        const cell = mapGrid[ix][iy];
+        const [cx,cy] = gridToCanvas(ix,iy);
+        const nx = ix + cell.next[0];
+        const ny = iy + cell.next[1];
+        const [nxC, nyC] = gridToCanvas(nx,ny);
+        ctx.moveTo(cx,cy);
+        ctx.lineTo(nxC,nyC);
+      }
+    }
+    ctx.stroke();
+  }
+  function drawApple(){
+    if(!apple) return;
+    const [ax,ay] = apple;
+    const [cx,cy] = gridToCanvas(ax,ay);
+    ctx.fillStyle = '#ff3b30';
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(6, CELL_SIZE/6), 0, Math.PI*2);
+    ctx.fill();
+  }
+  function drawSnake(){
+    ctx.fillStyle = '#34c759';
+    for(const [sx,sy] of snake){
+      const xPx = sx*CELL_SIZE + 4;
+      const yPx = (WORLD_SIZE-1-sy)*CELL_SIZE + 4;
+      ctx.fillRect(xPx, yPx, CELL_SIZE-8, CELL_SIZE-8);
+    }
+    if(snake.length){
+      const [hx,hy] = snake[0];
+      ctx.fillStyle = '#0b8f34';
+      const xPx = hx*CELL_SIZE + 6;
+      const yPx = (WORLD_SIZE-1-hy)*CELL_SIZE + 6;
+      ctx.fillRect(xPx, yPx, CELL_SIZE-12, CELL_SIZE-12);
+    }
+  }
+  function render(){
+    drawGrid();
+    drawHamiltonianPath();
+    drawApple();
+    drawSnake();
+  }
+
+  /** ========= 贪吃蛇核心逻辑 ========= */
+  function nextStep(px,py){
+    if (px===0 && py===0) return [px,py+1,DIRECTION[0]];
+    if (px===0 && py===WORLD_SIZE-1) return [px+1,py,DIRECTION[3]];
+    if (px===WORLD_SIZE-1 && py===WORLD_SIZE-1) return [px,py-1,DIRECTION[1]];
+    if (px===0) return [px,py+1,DIRECTION[0]];
+    if (py===0) return [px-1,py,DIRECTION[2]];
+    if (py%2===1){
+      if (px!==WORLD_SIZE-1) return [px+1,py,DIRECTION[3]];
+      else return [px,py-1,DIRECTION[1]];
+    } else {
+      if (px!==1) return [px-1,py,DIRECTION[2]];
+      else return [px,py-1,DIRECTION[1]];
+    }
+  }
+  function get_option_dirs(px,py,nx,ny,next_dir){
+    const ans = [];
+    for(const dir of DIRECTION){
+      if (px+dir[0]===nx && py+dir[1]===ny) continue;
+      if (dir===next_dir) continue;
+      ans.push(dir);
+    }
+    return ans;
+  }
+  function init_map(){
+    const m = Array.from({length: WORLD_SIZE},()=>Array.from({length: WORLD_SIZE},()=>({next:null,optional:[],id:0})));
+    let cx=0, cy=0, i=0;
+    while(i < WORLD_SIZE*WORLD_SIZE){
+      const [nx,ny,dir] = nextStep(cx,cy);
+      m[cx][cy].id = i;
+      m[cx][cy].next = dir;
+      m[cx][cy].optional = get_option_dirs(cx,cy,nx,ny,dir);
+      i++;
+      cx = nx; cy = ny;
+    }
+    return m;
+  }
+  function apple_distance(pid,aid){
+    const total = WORLD_SIZE*WORLD_SIZE;
+    return aid>=pid ? (aid-pid) : (aid+total-pid);
+  }
+  function find_position(px,py){
+    for(let i=0;i<snake.length;i++){
+      if(snake[i][0]===px && snake[i][1]===py) return snake.length - i - 1;
+    }
+    return -1;
+  }
+  function has_safe_route(px,py){
+    const l = snake.length;
+    let i = 0;
+    while(i < l){
+      const pos = find_position(px,py);
+      if(pos===-1 || pos<=i){
+        const nx = px + mapGrid[px][py].next[0];
+        const ny = py + mapGrid[px][py].next[1];
+        px = nx; py = ny;
+        i++;
+      }else{
+        return false;
+      }
+    }
+    return true;
+  }
+  function plan(px,py,ax,ay){
+    const dis = apple_distance(mapGrid[px][py].id, mapGrid[ax][ay].id);
+    for(const dir of mapGrid[px][py].optional){
+      const nx = px + dir[0], ny = py + dir[1];
+      if(nx<0||nx>=WORLD_SIZE||ny<0||ny>=WORLD_SIZE) continue;
+      const dis2 = apple_distance(mapGrid[nx][ny].id, mapGrid[ax][ay].id);
+      if(dis2 < dis && has_safe_route(nx,ny)){
+        return [nx,ny];
+      }
+    }
+    const nx = px + mapGrid[px][py].next[0];
+    const ny = py + mapGrid[px][py].next[1];
+    return [nx,ny];
+  }
+
+  /** ========= 苹果生成（不落蛇身） ========= */
+  function generateApple(){
+    const free = [];
+    for(let i=0;i<WORLD_SIZE;i++){
+      for(let j=0;j<WORLD_SIZE;j++){
+        const onSnake = snake.some(([sx,sy])=>sx===i && sy===j);
+        if(!onSnake) free.push([i,j]);
+      }
+    }
+    if(!free.length) return null;
+    return free[Math.floor(Math.random()*free.length)];
+  }
+
+  /** ========= 游戏状态控制 ========= */
+  function resetGame(keepSize=false){
+    if(!keepSize){
+      WORLD_SIZE = parseInt(sizeEl.value,10);
+    }
     resizeCanvas();
-    hamiltonian = buildHamiltonianCycle(GRID);
-    indexMap = buildIndexMap(hamiltonian, GRID);
-    snake = [hamiltonian[0]];
-    apple = randomApple();
-    score = 0;
+    x = 0; y = 0;
+    snake = [[x,y]];
+    mapGrid = init_map();
+    apple = generateApple();
+    steps = 0;
+    if(stepsEl) stepsEl.textContent = '0';
+    elapsedMs = 0;
+    lastTickAt = null;
+    updateElapsedUI();
+    render();
+  }
+  function step(){
+    if(lastTickAt !== null){
+      const now = performance.now();
+      elapsedMs += (now - lastTickAt);
+      lastTickAt = now;
+      updateElapsedUI();
+    }
+    if(!apple) { render(); return; }
+    const [nx,ny] = plan(x,y, apple[0],apple[1]);
+    x = clamp(nx, 0, WORLD_SIZE-1);
+    y = clamp(ny, 0, WORLD_SIZE-1);
+
+    if(x===apple[0] && y===apple[1]){
+      snake.unshift([x,y]);
+      apple = generateApple();
+    }else{
+      snake.unshift([x,y]);
+      snake.pop();
+    }
+    steps += 1;
+    if(stepsEl) stepsEl.textContent = String(steps);
+    render();
+    if(snake.length === WORLD_SIZE*WORLD_SIZE){
+      running = false;
+      clearInterval(timer);
+      document.getElementById('pause').disabled = true;
+      lastTickAt = null;
+      alert('🍎 全部吃完！');
+    }
+  }
+
+  /** ========= 事件绑定 ========= */
+  document.getElementById('start').addEventListener('click', ()=>{
+    if(running) return;
     running = true;
-    draw();
-    loop();
-}
-function setTick(ms) {
-    const n = Math.max(1, Math.floor(ms));
-    SPEED = n;
-}
-function restartWithGrid(n) {
-    if (n % 2 !== 0) return; // 仅支持偶数网格
-    GRID = n;
-    SMART_MODE_LEN = GRID;
-    // 清理老循环
-    if (loopTimer) {
-        clearTimeout(loopTimer);
-        loopTimer = null;
-    }
-    // 重新初始化
-    plan = [];
-    plannedForAppleIndex = -1;
-    init();
-}
-let controlsInitialized = false;
-function setupHUDControls() {
-    if (controlsInitialized) return;
-    const gridSel = document.getElementById("gridSelect");
-    const tickSel = document.getElementById("tickSelect");
-    if (gridSel) {
-        gridSel.value = String(GRID);
-        gridSel.addEventListener("change", (e) => {
-            const val = parseInt(e.target.value, 10);
-            restartWithGrid(val);
-        });
-    }
-    if (tickSel) {
-        tickSel.value = String(SPEED);
-        tickSel.addEventListener("change", (e) => {
-            const val = parseInt(e.target.value, 10);
-            setTick(val);
-        });
-    }
-    controlsInitialized = true;
-}
-/**
- * 构建 Hamiltonian Cycle（闭环）
- * 思路：蛇形扫描 + 最后连回起点
- * 适用于偶数网格（如 20×20）
- */
-function buildHamiltonianCycle(n) {
-    if (n % 2 !== 0) {
-        throw new Error("GRID 必须为偶数以构造有效哈密顿闭环");
-    }
-    const path = [];
-    // 顶行：x=0..n-1
-    for (let x = 0; x < n; x++) {
-        path.push({ x, y: 0 });
-    }
-    // 行 1..n-1：仅遍历 x=1..n-1，奇偶行交替方向，保证与上一行相邻
-    for (let y = 1; y < n; y++) {
-        if (y % 2 === 1) {
-            for (let x = n - 1; x >= 1; x--) {
-                path.push({ x, y });
-            }
-        }
-        else {
-            for (let x = 1; x < n; x++) {
-                path.push({ x, y });
-            }
-        }
-    }
-    // 最后补列 x=0：从底到上 y=n-1..1，使尾部在 (0,1)
-    for (let y = n - 1; y >= 1; y--) {
-        path.push({ x: 0, y });
-    }
-    return path;
-}
-/**
- * 构建坐标索引映射
- */
-function buildIndexMap(path, n) {
-    const map = Array.from({ length: n }, () => Array(n).fill(-1));
-    path.forEach((p, i) => (map[p.y][p.x] = i));
-    return map;
-}
-/**
- * 随机生成苹果（不能在蛇身上）
- */
-function randomApple() {
-    let p;
-    do {
-        p = { x: Math.floor(Math.random() * GRID), y: Math.floor(Math.random() * GRID) };
-    } while (snake.some(s => s.x === p.x && s.y === p.y));
-    // 新苹果生成时清空计划
-    plan = [];
-    plannedForAppleIndex = -1;
-    return p;
-}
-/**
- * 绘制游戏画面
- */
-function draw() {
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    // 画苹果
-    ctx.fillStyle = "#ff3b3b";
-    ctx.fillRect(apple.x * PIX, apple.y * PIX, PIX - 1, PIX - 1);
-    // 画蛇
-    for (let i = 0; i < snake.length; i++) {
-        ctx.fillStyle = i === 0 ? "#00ff88" : "#00cc66";
-        const s = snake[i];
-        ctx.fillRect(s.x * PIX, s.y * PIX, PIX - 1, PIX - 1);
-    }
-    const scoreEl = document.getElementById("score");
-    const lenEl = document.getElementById("len");
-    const speedEl = document.getElementById("speed");
-    if (scoreEl) scoreEl.textContent = `Score: ${score}`;
-    if (lenEl) lenEl.textContent = `Len: ${snake.length}`;
-    if (speedEl) speedEl.textContent = `Tick: ${SPEED}ms`;
-    setupHUDControls();
-}
-/**
- * 获取某格在环上的索引
- */
-function indexOf(p) {
-    return indexMap[p.y][p.x];
-}
-/**
- * 获取环上的下一个点
- */
-function nextOnCycle(p) {
-    const i = indexOf(p);
-    return hamiltonian[(i + 1) % hamiltonian.length];
-}
-// 环上的前向距离
-function cycleDistance(aIdx, bIdx) {
-    const L = hamiltonian.length;
-    return (bIdx - aIdx + L) % L;
-}
-// 苹果是否在“前方”：头->苹果 的环距小于 头->尾 的环距
-function isAheadOnCycle(headIdx, appleIdx, tailIdx) {
-    return cycleDistance(headIdx, appleIdx) < cycleDistance(headIdx, tailIdx);
-}
+    document.getElementById('pause').disabled = false;
+    lastTickAt = performance.now();
+    timer = setInterval(step, stepMs);
+  });
+  document.getElementById('pause').addEventListener('click', ()=>{
+    if(!running) return;
+    running = false;
+    document.getElementById('pause').disabled = true;
+    clearInterval(timer);
+    lastTickAt = null;
+  });
+  document.getElementById('reset').addEventListener('click', ()=>{
+    running = false;
+    clearInterval(timer);
+    document.getElementById('pause').disabled = true;
+    resetGame(false);
+  });
+  sizeEl.addEventListener('change', ()=>{
+    running = false;
+    clearInterval(timer);
+    document.getElementById('pause').disabled = true;
+    resetGame(false);
+  });
 
-// 曼哈顿距离
-function manhattan(a, b) {
-    return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-}
-// 选择朝苹果迈出的第一步（优先缩小曼哈顿距离），避开占用，允许贴尾
-function firstStepTowardsApple(head) {
-    const occ = buildOccupied(true);
-    const dx = apple.x - head.x;
-    const dy = apple.y - head.y;
-    const horizFirst = Math.abs(dx) >= Math.abs(dy);
-    const candidates = [];
-    if (horizFirst) {
-        if (dx !== 0) candidates.push({ x: head.x + Math.sign(dx), y: head.y });
-        if (dy !== 0) candidates.push({ x: head.x, y: head.y + Math.sign(dy) });
-    } else {
-        if (dy !== 0) candidates.push({ x: head.x, y: head.y + Math.sign(dy) });
-        if (dx !== 0) candidates.push({ x: head.x + Math.sign(dx), y: head.y });
+  // 速度滑杆：更新间隔与显示；运行中动态生效
+  const initSpeed = parseInt(speedEl?.value || '150', 10);
+  if(!Number.isNaN(initSpeed)) {
+    stepMs = initSpeed;
+    if(speedValEl) speedValEl.textContent = String(stepMs);
+  }
+  speedEl?.addEventListener('input', ()=>{
+    const val = parseInt(speedEl.value, 10);
+    if(Number.isNaN(val)) return;
+    stepMs = val;
+    if(speedValEl) speedValEl.textContent = String(stepMs);
+    if(running){
+      clearInterval(timer);
+      lastTickAt = performance.now();
+      timer = setInterval(step, stepMs);
     }
-    // 限制捷径只进入环的“前方空段”（head→apple 之间的环索引区间）
-    const headIdx = indexOf(head);
-    const appleIdx = indexOf(apple);
-    const dCycleHA = cycleDistance(headIdx, appleIdx);
-    const cycleNext = nextOnCycle(head);
-    for (const c of candidates) {
-        if (c.x < 0 || c.x >= GRID || c.y < 0 || c.y >= GRID) continue;
-        if (occ[c.y][c.x]) continue;
-        const ci = indexOf(c);
-        // 仅允许前方区间内的候选，避免跨到已占用段导致自循环
-        if (cycleDistance(headIdx, ci) === 0) continue; // 自己
-        if (cycleDistance(headIdx, ci) > dCycleHA) continue; // 超出前方区间
-        // 强化安全性：若不是沿环的常规下一格，则要求新头至少仍有一个自由邻居
-        const isCycleNext = (c.x === cycleNext.x && c.y === cycleNext.y);
-        if (isCycleNext || hasFreeNeighborAfter(c)) return c;
-    }
-    return null;
-}
-// 基于当前状态为本苹果生成一条曼哈顿路径（不使用 BFS），逐步模拟并确保每步不撞击；
-// 仅在环的 head→apple 前方区间内行走；若失败返回 null
-function planManhattanPath() {
-    const target = apple;
-    // 只在苹果位于前方时考虑曼哈顿计划
-    const head = snake[0];
-    const tail = snake[snake.length - 1];
-    const headIdx = indexOf(head);
-    const tailIdx = indexOf(tail);
-    const appleIdx = indexOf(target);
-    if (!isAheadOnCycle(headIdx, appleIdx, tailIdx)) return null;
-    const dMan = manhattan(head, target);
-    const dCycleHA = cycleDistance(headIdx, appleIdx);
-    if (dMan > dCycleHA) return null;
-    // 模拟序列
-    let sim = snake.map(p => ({ x: p.x, y: p.y }));
-    const seq = [];
-    let cur = { x: head.x, y: head.y };
-    // 最多尝试 dMan 步达到苹果
-    for (let step = 0; step < dMan; step++) {
-        // 在模拟空间内选第一步（使用当前 firstStepTowardsApple 策略但基于 sim 状态）
-        // 构造占用（允许贴尾）：根据 sim 生成 occ
-        const occ = Array.from({ length: GRID }, () => Array(GRID).fill(false));
-        for (let i = 0; i < sim.length; i++) {
-            if (i === sim.length - 1) continue; // 尾将移动
-            const s = sim[i];
-            occ[s.y][s.x] = true;
-        }
-        const dx = target.x - cur.x;
-        const dy = target.y - cur.y;
-        const horizFirst = Math.abs(dx) >= Math.abs(dy);
-        const candidates = [];
-        if (horizFirst) {
-            if (dx !== 0) candidates.push({ x: cur.x + Math.sign(dx), y: cur.y });
-            if (dy !== 0) candidates.push({ x: cur.x, y: cur.y + Math.sign(dy) });
-        } else {
-            if (dy !== 0) candidates.push({ x: cur.x, y: cur.y + Math.sign(dy) });
-            if (dx !== 0) candidates.push({ x: cur.x + Math.sign(dx), y: cur.y });
-        }
-        const headIdxLocal = indexOf(cur);
-        const dCycleHALocal = cycleDistance(headIdxLocal, appleIdx);
-        let chosen = null;
-        for (const c of candidates) {
-            if (c.x < 0 || c.x >= GRID || c.y < 0 || c.y >= GRID) continue;
-            if (occ[c.y][c.x]) continue;
-            const ci = indexOf(c);
-            if (cycleDistance(headIdxLocal, ci) === 0) continue;
-            if (cycleDistance(headIdxLocal, ci) > dCycleHALocal) continue;
-            chosen = c;
-            break;
-        }
-        if (!chosen) return null;
-        // 推进模拟：若此步吃到苹果则不移尾，否则移尾
-        const ate = chosen.x === target.x && chosen.y === target.y;
-        sim.unshift(chosen);
-        if (!ate) sim.pop();
-        seq.push(chosen);
-        cur = chosen;
-        if (ate) break;
-    }
-    // 若未到达目标，失败
-    if (!(cur.x === target.x && cur.y === target.y)) return null;
-    // 环可恢复性：到达苹果后的新头 nextOnCycle 不应被占用（新蛇态）
-    const newHead = sim[0];
-    const nextCycle = nextOnCycle(newHead);
-    if (sim.some(p => p.x === nextCycle.x && p.y === nextCycle.y)) return null;
-    return seq;
-}
+  });
 
-// ---- BFS 最短路工具 ----
-function neighbors(p) {
-    const dirs = [
-        { x: 1, y: 0 },
-        { x: -1, y: 0 },
-        { x: 0, y: 1 },
-        { x: 0, y: -1 },
-    ];
-    const res = [];
-    for (const d of dirs) {
-        const nx = p.x + d.x, ny = p.y + d.y;
-        if (nx >= 0 && nx < GRID && ny >= 0 && ny < GRID) res.push({ x: nx, y: ny });
-    }
-    return res;
-}
-
-function buildOccupied(excludeTail) {
-    const occ = Array.from({ length: GRID }, () => Array(GRID).fill(false));
-    const tailIndex = snake.length - 1;
-    for (let i = 0; i < snake.length; i++) {
-        if (excludeTail && i === tailIndex) continue;
-        const s = snake[i];
-        occ[s.y][s.x] = true;
-    }
-    return occ;
-}
-
-// 不使用 BFS（按需保留邻居与占用构造供贪心与安全性近似判断）
-
-function simulateStep(next) {
-    const grew = next.x === apple.x && next.y === apple.y;
-    const newSnake = [next, ...snake];
-    if (!grew) newSnake.pop();
-    return newSnake;
-}
-
-// 近似安全性：模拟一步后，新头至少拥有一个可用邻居（不致立刻被自体封死）
-function hasFreeNeighborAfter(next) {
-    const sim = simulateStep(next);
-    const grew = next.x === apple.x && next.y === apple.y;
-    const newHead = sim[0];
-    const occ = Array.from({ length: GRID }, () => Array(GRID).fill(false));
-    for (let i = 0; i < sim.length; i++) {
-        // 若未吃到苹果，尾巴将移动，排除尾格以更宽松评估可用空间
-        if (!grew && i === sim.length - 1) continue;
-        const s = sim[i];
-        occ[s.y][s.x] = true;
-    }
-    for (const nb of neighbors(newHead)) {
-        if (!occ[nb.y][nb.x]) return true;
-    }
-    return false;
-}
-
-// 基于曼哈顿距离的贪心：从头部可达邻居中选择距离苹果最近且近似安全的下一步
-function chooseGreedyMove(head) {
-    const occ = buildOccupied(true); // 允许踩到当前尾格（若不吃，尾会移开）
-    const options = neighbors(head).filter(nb => !occ[nb.y][nb.x]);
-    options.sort((a, b) => manhattan(a, apple) - manhattan(b, apple));
-    for (const candidate of options) {
-        if (hasFreeNeighborAfter(candidate)) return candidate;
-    }
-    return null;
-}
-/**
- * 每一步逻辑：沿固定哈密顿环前进
- */
-function step() {
-    const head = snake[0];
-    let next = null;
-    // 若当前没有计划或苹果变化，尝试为该苹果生成安全的曼哈顿计划
-    const currentAppleIdx = indexOf(apple);
-    if (plan.length === 0 || plannedForAppleIndex !== currentAppleIdx) {
-        const seq = planManhattanPath();
-        if (seq) {
-            plan = seq.slice();
-            plannedForAppleIndex = currentAppleIdx;
-        } else {
-            plan = [];
-            plannedForAppleIndex = -1;
-        }
-    }
-    // 优先执行计划中的下一步
-    if (plan.length > 0) {
-        next = plan.shift();
-    }
-    // 若无计划，备用策略：短蛇阶段用贪心靠近苹果
-    if (!next && snake.length < SMART_MODE_LEN) {
-        next = chooseGreedyMove(head);
-    }
-
-    // 兜底：无合适贪心步则沿哈密顿环
-    if (!next) {
-        next = nextOnCycle(head);
-    }
-
-    // 执行动作
-    snake.unshift(next);
-    const ate = next.x === apple.x && next.y === apple.y;
-    if (ate) {
-        score++;
-        apple = randomApple();
-        // 新苹果出现后清空旧计划
-        plan = [];
-        plannedForAppleIndex = -1;
-    } else {
-        snake.pop();
-    }
-}
-/**
- * 主循环
- */
-function loop() {
-    if (!running)
-        return;
-    step();
-    draw();
-    loopTimer = setTimeout(loop, SPEED);
-}
-// 监听窗口尺寸变化，动态调整画布并重绘
-window.addEventListener("resize", () => {
+  window.addEventListener('resize', ()=>{
     resizeCanvas();
-    draw();
+    render();
+  });
+
+  /** ========= 初始化 ========= */
+  resetGame(false);
 });
-init();

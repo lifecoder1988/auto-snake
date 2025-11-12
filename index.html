@@ -1,127 +1,67 @@
 <!DOCTYPE html>
 <html lang="zh">
-
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>自动贪吃蛇 - Manhattan/BFS</title>
-    <style>
-        :root {
-            color-scheme: dark;
-        }
-
-        body {
-            margin: 0;
-            background: #121212;
-            color: #eaeaea;
-            display: grid;
-            place-items: center;
-            height: 100vh;
-            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-            -webkit-tap-highlight-color: transparent;
-        }
-
-        .wrap {
-            display: grid;
-            gap: 12px;
-            justify-items: center;
-        }
-
-        canvas {
-            background: #0d0d0d;
-            box-shadow: 0 0 24px rgba(0, 255, 128, 0.25), inset 0 0 0 1px #1f1f1f;
-            border-radius: 10px;
-            width: 92vw; /* 作为 JS 自适应的退化兜底 */
-            height: auto;
-            max-width: 92vh;
-        }
-
-        .row {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-
-        .tag {
-            padding: 6px 12px;
-            border: 1px solid #333;
-            border-radius: 999px;
-            font-size: 14px;
-            opacity: .95
-        }
-
-        .select {
-            appearance: none;
-            padding: 6px 10px;
-            border-radius: 8px;
-            border: 1px solid #333;
-            background: #1a1a1a;
-            color: #eaeaea;
-            font-size: 14px;
-        }
-
-        button {
-            all: unset;
-            cursor: pointer;
-            padding: 8px 14px;
-            border: 1px solid #333;
-            border-radius: 8px;
-            background: #1a1a1a;
-            transition: .2s;
-            font-weight: 600;
-        }
-
-        button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
-        }
-
-        @media (max-width: 640px) {
-            .wrap { gap: 10px; }
-            .row { flex-wrap: wrap; gap: 8px; justify-content: center; }
-            .tag { font-size: 13px; padding: 6px 10px; }
-            button { padding: 10px 16px; font-size: 14px; }
-            .select { padding: 8px 12px; font-size: 14px; }
-        }
-    </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>自动贪吃蛇（哈密顿回路版）</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#ffffff; --border:#e5e7eb; --text:#111827; --muted:#6b7280;
+    --accent:#0A84FF; --green:#34c759; --orange:#ff9f0a; --red:#ff453a;
+  }
+  body{font-family:system-ui,Segoe UI,Arial; margin:12px; text-align:center; background:var(--bg); color:var(--text);}
+  .toolbar{display:flex; gap:12px; justify-content:center; align-items:center; margin-bottom:12px; flex-wrap:wrap;}
+  label{display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--border); padding:8px 12px; border-radius:12px;}
+  select{padding:10px 12px; font-size:16px; border:1px solid var(--border); border-radius:10px; background:#fff;}
+  input[type="range"]{width:160px; accent-color:var(--accent);} 
+  .actions{display:flex; gap:8px; flex-wrap:nowrap; justify-content:center; align-items:center; overflow-x:auto;}
+  button{padding:10px 16px; font-size:16px; min-height:44px; border:1px solid var(--border); border-radius:12px; background:#fff; cursor:pointer; transition:transform .06s ease, box-shadow .2s ease, filter .2s ease; font-weight:600;}
+  button:hover{filter:brightness(1.03);} 
+  button:active{transform:translateY(1px);} 
+  button:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+  #start{background:var(--green); color:#fff; border-color:var(--green);} 
+  #pause{background:var(--orange); color:#fff; border-color:var(--orange);} 
+  #reset{background:var(--red); color:#fff; border-color:var(--red);} 
+  #start::before{content:"▶"; margin-right:6px;} 
+  #pause::before{content:"⏸"; margin-right:6px;} 
+  #reset::before{content:"↺"; margin-right:6px;} 
+  button:disabled{opacity:.6; cursor:not-allowed;}
+  canvas{background:#f8f8f8; display:block; margin:0 auto; border:1px solid var(--border); border-radius:14px; width:100%; max-width:600px; aspect-ratio:1 / 1; box-shadow:0 4px 16px rgba(0,0,0,.06);} 
+  .legend{font-size:13px; color:var(--muted); margin-top:8px;}
+</style>
 </head>
-
 <body>
-    <div class="wrap">
-        <canvas id="game" width="480" height="480"></canvas>
-        <div class="row" style="gap:14px">
-            <span class="tag" id="score">Score: 0</span>
-            <span class="tag" id="len">Len: 1</span>
-            <span class="tag" id="speed">Tick: 10ms</span>
-            <button id="toggle">暂停</button>
-            <button id="reset">重开</button>
-        </div>
-        <div class="row" style="gap:14px">
-            <span class="tag">地图：</span>
-            <select id="gridSelect" class="select">
-                <option value="10">10</option>
-                <option value="12">12</option>
-                <option value="14">14</option>
-                <option value="16">16</option>
-                <option value="20" selected>20</option>
-                <option value="24">24</option>
-                <option value="30">30</option>
-            </select>
-            <span class="tag">Tick：</span>
-            <select id="tickSelect" class="select">
-                <option value="5">5ms</option>
-                <option value="10" selected>10ms</option>
-                <option value="15">15ms</option>
-                <option value="25">25ms</option>
-                <option value="40">40ms</option>
-                <option value="60">60ms</option>
-            </select>
-        </div>
-        <div class="row" style="font-size:12px;opacity:.8">
-            <span>策略：优先 <b>最短路吃苹果</b>，若不安全则 <b>追尾/拉长路径</b>。</span>
-        </div>
-    </div>
-    <script type="module" src="./main.js"></script>
-</body>
+  <h2>自动贪吃蛇（哈密顿回路）</h2>
 
+  <div class="toolbar">
+    <label>地图大小：
+      <select id="size">
+        <option value="6" selected>6 × 6</option>
+        <option value="8">8 × 8</option>
+        <option value="10">10 × 10</option>
+        <option value="12">12 × 12</option>
+        <option value="16">16 × 16</option>
+        <option value="20">20 × 20</option>
+        <option value="24">24 × 24</option>
+        <option value="28">28 × 28</option>
+        <option value="32">32 × 32</option>
+      </select>
+    </label>
+    <label>速度：
+      <input id="speed" type="range" min="50" max="300" step="50" value="150" />
+      <span id="speedVal">150</span> ms/步
+    </label>
+    <div class="actions">
+      <button id="start">开始</button>
+      <button id="pause" disabled>暂停</button>
+      <button id="reset">重置</button>
+    </div>
+    <span class="legend">显示哈密顿路径（淡蓝线）</span>
+    <span class="legend">步数：<span id="steps">0</span></span>
+    <span class="legend">用时：<span id="elapsed">0.0</span>s</span>
+  </div>
+
+  <canvas id="game"></canvas>
+<script src="main.js" defer></script>
+</body>
 </html>
